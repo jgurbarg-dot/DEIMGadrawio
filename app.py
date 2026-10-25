@@ -57,11 +57,8 @@ if st.button("Procesar y Generar Archivo"):
         # Configurar API
         genai.configure(api_key=api_key)
         
-        # Selección del modelo (Intenta el más avanzado, si falla usa el clásico de visión)
-        try:
-            model = genai.GenerativeModel('gemini-1.5-pro')
-        except:
-            model = genai.GenerativeModel('gemini-pro-vision')
+        # Selección del modelo (Usamos directamente la versión que te funciona)
+        model = genai.GenerativeModel('gemini-3.8-flash')
 
         with st.spinner("Procesando documento con IA..."):
             try:
