@@ -1,20 +1,14 @@
 import streamlit as st
 import google.generativeai as genai
 import json
+import fitz  # PyMuPDF para leer PDFs
 from PIL import Image
+import io
 
 # 1. Configuración de la página
-st.set_page_config(page_title="Img to Draw.io", layout="centered")
+st.set_page_config(page_title="Img/PDF a Draw.io", layout="centered", page_icon="⚙️")
 
-# 2. Configuración de la API de Gemini (Usando los Secrets de Streamlit)
-try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Usamos Gemini 1.5 Pro o Flash por sus excelentes capacidades de visión
-    model = genai.GenerativeModel('gemini-1.5-flash') 
-except Exception as e:
-    st.error("Error al configurar la API. Verifica tus Secrets en Streamlit.")
-
-# 3. Función para generar el XML de Draw.io
+# 2. Función para generar el XML de Draw.io
 def generar_drawio_xml(nodos, conexiones):
     xml = '''<mxfile host="Electron" modified="2023-10-01T12:00:00.000Z" agent="Python" version="21.0.0" type="device">
   <diagram id="diagrama_1" name="Página-1">
@@ -23,14 +17,12 @@ def generar_drawio_xml(nodos, conexiones):
         <mxCell id="0" />
         <mxCell id="1" parent="0" />'''
 
-    # Generar Nodos
     for nodo in nodos:
         xml += f'''
         <mxCell id="{nodo.get('id', '')}" value="{nodo.get('texto', '')}" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
           <mxGeometry x="{nodo.get('x', 0)}" y="{nodo.get('y', 0)}" width="120" height="60" as="geometry" />
         </mxCell>'''
 
-    # Generar Conexiones
     for index, edge in enumerate(conexiones):
         edge_id = f"edge_{index}"
         xml += f'''
@@ -43,44 +35,68 @@ def generar_drawio_xml(nodos, conexiones):
     </mxGraphModel>
   </diagram>
 </mxfile>'''
-    
     return xml
 
-# 4. Interfaz Principal
-st.title("Diagram Extract: Imagen a Draw.io")
-st.write("Sube una imagen de un diagrama. La IA extraerá los nodos y conexiones para crear un archivo `.drawio` editable.")
+# 3. Interfaz Principal
+st.title("⚙️ P&ID a Diagrama Editable (Draw.io)")
+st.markdown("Sube imágenes o PDFs de tus diagramas. La IA extraerá los equipos y tuberías a un formato editable.")
 
-imagen_subida = st.file_uploader("Sube tu imagen (PNG, JPG)", type=["png", "jpg", "jpeg"])
+# Sidebar para la API Key (Igual que en tu app de Mathcad)
+st.sidebar.header("Configuración")
+api_key = st.sidebar.text_input("Ingresa tu API Key de Gemini:", type="password")
+st.sidebar.markdown("[Obtén tu API Key aquí](https://aistudio.google.com/app/apikey)")
 
-if imagen_subida:
-    img = Image.open(imagen_subida)
-    st.image(img, caption="Imagen cargada", use_column_width=True)
-    
-    if st.button("Procesar y Generar Archivo"):
-        with st.spinner("Analizando topología del diagrama..."):
+archivo_subido = st.file_uploader("Sube tu archivo (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
+
+if st.button("Procesar y Generar Archivo"):
+    if not api_key:
+        st.error("Por favor, ingresa tu API Key en el menú lateral.")
+    elif not archivo_subido:
+        st.warning("Sube al menos un archivo antes de continuar.")
+    else:
+        # Configurar API
+        genai.configure(api_key=api_key)
+        
+        # Selección del modelo (Intenta el más avanzado, si falla usa el clásico de visión)
+        try:
+            model = genai.GenerativeModel('gemini-1.5-pro')
+        except:
+            model = genai.GenerativeModel('gemini-pro-vision')
+
+        with st.spinner("Procesando documento con IA..."):
             try:
-                # Prompt estricto para forzar la salida en JSON puro
+                # Si es PDF, convertir la primera página a imagen
+                if archivo_subido.name.lower().endswith('.pdf'):
+                    doc = fitz.open(stream=archivo_subido.read(), filetype="pdf")
+                    pagina = doc.load_page(0)
+                    pix = pagina.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_data))
+                    st.image(img, caption="Primera página del PDF extraída", use_column_width=True)
+                else:
+                    img = Image.open(archivo_subido)
+                    st.image(img, caption="Imagen cargada", use_column_width=True)
+                
+                # Prompt estricto
                 prompt = """
-                Analiza el diagrama de esta imagen. 
-                Extrae los bloques/nodos y las líneas que los conectan.
-                Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta, sin formato markdown ni texto adicional:
+                Analiza este diagrama de ingeniería. 
+                Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta, sin formato markdown:
                 {
                   "nodos": [
-                    {"id": "n1", "texto": "Texto del bloque", "x": 100, "y": 100},
-                    {"id": "n2", "texto": "Otro bloque", "x": 100, "y": 250}
+                    {"id": "eq1", "texto": "Tanque", "x": 100, "y": 100},
+                    {"id": "v1", "texto": "Válvula", "x": 100, "y": 250}
                   ],
                   "conexiones": [
-                    {"origen": "n1", "destino": "n2"}
+                    {"origen": "eq1", "destino": "v1"}
                   ]
                 }
-                Intenta estimar las posiciones x, y basándote en la imagen (usa valores de 0 a 800 aproximadamente).
                 Asegúrate de que los IDs coincidan entre nodos y conexiones.
                 """
                 
                 respuesta = model.generate_content([prompt, img])
                 texto_respuesta = respuesta.text.strip()
                 
-                # Limpieza por si el modelo incluye marcas de bloque de código Markdown
+                # Limpiar posibles comillas de Markdown
                 if texto_respuesta.startswith("```json"):
                     texto_respuesta = texto_respuesta[7:-3]
                 elif texto_respuesta.startswith("```"):
@@ -88,12 +104,9 @@ if imagen_subida:
                 
                 datos_ia = json.loads(texto_respuesta.strip())
                 
-                nodos = datos_ia.get("nodos", [])
-                conexiones = datos_ia.get("conexiones", [])
+                xml_final = generar_drawio_xml(datos_ia.get("nodos", []), datos_ia.get("conexiones", []))
                 
-                xml_final = generar_drawio_xml(nodos, conexiones)
-                
-                st.success(f"¡Análisis completo! Se detectaron {len(nodos)} nodos y {len(conexiones)} conexiones.")
+                st.success("¡Diagrama procesado con éxito!")
                 
                 st.download_button(
                     label="⬇️ Descargar archivo editable (.drawio)",
@@ -103,8 +116,7 @@ if imagen_subida:
                 )
                 
             except json.JSONDecodeError:
-                st.error("Error al procesar los datos de la IA. El modelo no devolvió un JSON válido. Intenta de nuevo.")
-                with st.expander("Ver salida cruda de la IA para depurar"):
-                    st.write(texto_respuesta)
+                st.error("Error: El modelo no devolvió un formato JSON válido.")
+                st.write(texto_respuesta)
             except Exception as e:
-                st.error(f"Ocurrió un error inesperado: {e}")
+                st.error(f"Ocurrió un error: {e}")
